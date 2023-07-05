@@ -1,10 +1,11 @@
 use crate::exporter::InfluxExporter;
 use crate::recorder::InfluxHandle;
 use crate::BuildError;
-use anyhow::anyhow;
 use async_trait::async_trait;
 use itertools::Itertools;
 use reqwest::{Body, Client, RequestBuilder, Url};
+use tokio_retry::strategy::FibonacciBackoff;
+use tokio_retry::Retry;
 use tracing::{debug, error};
 
 #[derive(Clone)]
@@ -70,16 +71,25 @@ impl InfluxExporter for InfluxHttpExporter {
         let (count, body) = self.handle.render();
         if count > 0 {
             debug!("writing {count} metrics over http");
-            let resp = self
-                .base
-                .try_clone()
-                .ok_or_else(|| anyhow!("failed to clone base request"))?
-                .body(Body::from(body))
-                .send()
-                .await?;
+            let resp = Retry::spawn(FibonacciBackoff::from_millis(500).take(3), || async {
+                let resp = self
+                    .base
+                    .try_clone()
+                    .unwrap()
+                    .body(Body::from(body.to_owned()))
+                    .send()
+                    .await
+                    .map_err(|e| (e, None))?;
 
-            match resp.error_for_status_ref() {
-                Ok(_) => {
+                match resp.error_for_status_ref() {
+                    Ok(_) => Ok(resp),
+                    Err(e) => Err((e, Some(resp))),
+                }
+            })
+            .await;
+
+            match resp {
+                Ok(resp) => {
                     let status = resp.status().to_string();
                     let resp = resp.text().await?;
                     debug!(
@@ -88,17 +98,25 @@ impl InfluxExporter for InfluxHttpExporter {
                         "received response from server"
                     );
                 }
-                Err(e) => {
+                Err((e, Some(resp))) => {
                     let status = resp.status().to_string();
                     let resp = resp.text().await?;
                     error!(
                         error = ?e,
                         status = status,
                         response = resp,
+                        metrics = body,
+                        "failed to write to server"
+                    );
+                }
+                Err((e, _)) => {
+                    error!(
+                        error = ?e,
                         "failed to write to server"
                     );
                 }
             }
+
             self.handle.clear();
         } else {
             debug!("no metrics to write");
