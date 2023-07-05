@@ -2,6 +2,11 @@
 name = "metrics-exporter-influx"
 version = "0.1.0"
 edition = "2021"
+description = "A metrics-compatible exporter for sending metrics to Influx/Grafana Cloud"
+homepage = "https://github.com/sevco/metrics-exporter-influx"
+repository = "https://github.com/sevco/metrics-exporter-influx"
+
+license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
