@@ -1,6 +1,16 @@
 # metrics-exporter-influx
 
-![GitHub Workflow Status](https://img.shields.io/github/workflow/status/sevco/metrics-datadog-exporter-rs/CI)
+
+![build-badge][] [![downloads-badge][] ![release-badge][]][crate] [![docs-badge][]][docs] [![license-badge][]](#license)
+
+[build-badge]: https://img.shields.io/github/actions/workflow/status/sevco/metrics-exporter-influx/ci.yml?branch=main
+[downloads-badge]: https://img.shields.io/crates/d/metrics-exporter-influx.svg
+[release-badge]: https://img.shields.io/crates/v/metrics-exporter-influx.svg
+[license-badge]: https://img.shields.io/crates/l/metrics-exporter-influx.svg
+[docs-badge]: https://docs.rs/metrics-exporter-influx/badge.svg
+[crate]: https://crates.io/crates/metrics-exporter-influx
+[docs]: https://docs.rs/metrics-exporter-influx
+
 
 ### Metrics reporter for https://github.com/metrics-rs/metrics that writes to InfluxDB.
 
