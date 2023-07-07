@@ -22,12 +22,20 @@ use tokio::{runtime, time};
 type ExporterFuture = Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'static>>;
 
 pub struct InfluxRecorderHandle {
-    inner: RecoverableRecorder<InfluxRecorder>,
+    inner: Option<RecoverableRecorder<InfluxRecorder>>,
 }
 
 impl InfluxRecorderHandle {
     pub fn close(self) {
-        self.inner.into_inner();
+        drop(self)
+    }
+}
+
+impl Drop for InfluxRecorderHandle {
+    fn drop(&mut self) {
+        if let Some(inner) = self.inner.take() {
+            inner.into_inner();
+        }
     }
 }
 
@@ -209,7 +217,7 @@ impl InfluxBuilder {
         };
 
         Ok(InfluxRecorderHandle {
-            inner: RecoverableRecorder::from_recorder(recorder)?,
+            inner: Some(RecoverableRecorder::from_recorder(recorder)?),
         })
     }
 }
