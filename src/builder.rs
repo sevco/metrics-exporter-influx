@@ -1,10 +1,13 @@
 use crate::data::MetricData;
+use crate::distribution::DistributionBuilder;
 #[cfg(feature = "http")]
 use crate::http::APIVersion;
+use crate::matcher::Matcher;
 use crate::recorder::{ExporterConfig, HttpConfig, InfluxRecorder, Inner};
+use crate::registry::AtomicStorage;
 use metrics::SetRecorderError;
-use metrics_util::registry::{AtomicStorage, Registry};
-use metrics_util::RecoverableRecorder;
+use metrics_util::registry::Registry;
+use metrics_util::{parse_quantiles, Quantile, RecoverableRecorder};
 #[cfg(feature = "http")]
 use reqwest::Url;
 use std::collections::HashMap;
@@ -55,6 +58,9 @@ pub enum BuildError {
     /// Installing the recorder did not succeed.
     #[error("failed to install exporter as global recorder: {0}")]
     FailedToSetGlobalRecorder(#[from] SetRecorderError),
+    /// Empty buckets or quantiles
+    #[error("empty buckets or quantiles")]
+    EmptyBucketsOrQuantiles,
 }
 
 pub struct InfluxBuilder {
@@ -62,15 +68,57 @@ pub struct InfluxBuilder {
     pub(crate) duration: Option<Duration>,
     pub(crate) global_tags: Option<HashMap<String, String>>,
     pub(crate) global_fields: Option<HashMap<String, MetricData>>,
+    pub(crate) quantiles: Vec<Quantile>,
+    pub(crate) buckets: Option<Vec<f64>>,
+    pub(crate) bucket_overrides: Option<HashMap<Matcher, Vec<f64>>>,
 }
 
 impl InfluxBuilder {
     pub fn new() -> Self {
+        let quantiles = parse_quantiles(&[0.0, 0.5, 0.9, 0.95, 0.99, 0.999, 1.0]);
         Self {
             exporter_config: ExporterConfig::File(Arc::new(Mutex::new(io::stderr()))),
             global_tags: None,
             duration: None,
             global_fields: None,
+            quantiles,
+            buckets: None,
+            bucket_overrides: None,
+        }
+    }
+
+    pub fn with_quantiles(mut self, quantiles: &[f64]) -> Result<Self, BuildError> {
+        if quantiles.is_empty() {
+            Err(BuildError::EmptyBucketsOrQuantiles)
+        } else {
+            self.quantiles = parse_quantiles(quantiles);
+            Ok(self)
+        }
+    }
+
+    pub fn with_buckets(mut self, values: &[f64]) -> Result<Self, BuildError> {
+        if values.is_empty() {
+            Err(BuildError::EmptyBucketsOrQuantiles)
+        } else {
+            self.buckets = Some(values.to_vec());
+            Ok(self)
+        }
+    }
+
+    pub fn add_buckets_for_metric(
+        mut self,
+        matcher: Matcher,
+        values: &[f64],
+    ) -> Result<Self, BuildError> {
+        if values.is_empty() {
+            Err(BuildError::EmptyBucketsOrQuantiles)
+        } else {
+            self.bucket_overrides
+                .get_or_insert_with(HashMap::new)
+                .entry(matcher)
+                .or_insert(values.to_vec());
+            self.buckets = Some(values.to_vec());
+            Ok(self)
         }
     }
 
@@ -169,10 +217,15 @@ impl InfluxBuilder {
         InfluxRecorder::new(
             Arc::new(Inner {
                 registry: Registry::new(AtomicStorage),
+                global_tags: self.global_tags.unwrap_or_default(),
+                global_fields: self.global_fields.unwrap_or_default(),
+                distribution_builder: DistributionBuilder::new(
+                    self.quantiles,
+                    self.buckets,
+                    self.bucket_overrides,
+                ),
             }),
             self.exporter_config,
-            self.global_tags.unwrap_or_default(),
-            self.global_fields.unwrap_or_default(),
         )
     }
 

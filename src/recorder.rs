@@ -1,10 +1,13 @@
 use crate::data::{InfluxMetric, MetricData};
+use crate::distribution::{Distribution, DistributionBuilder};
 use crate::exporter::{InfluxExporter, InfluxFileExporter};
 use crate::http::{APIVersion, InfluxHttpExporter};
+use crate::registry::AtomicStorage;
 use crate::BuildError;
 use itertools::Itertools;
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Label, Recorder, SharedString, Unit};
-use metrics_util::registry::{AtomicStorage, Registry};
+use metrics_util::registry::Registry;
+use quanta::Instant;
 use reqwest::Url;
 use std::collections::HashMap;
 use std::io::Write;
@@ -43,26 +46,21 @@ impl ExporterConfig {
 
 pub(crate) struct Inner {
     pub registry: Registry<Key, AtomicStorage>,
+    pub global_tags: HashMap<String, String>,
+    pub global_fields: HashMap<String, MetricData>,
+    // pub distributions: Arc<RwLock<HashMap<String, IndexMap<Vec<(String, String)>, Distribution>>>>,
+    pub distribution_builder: DistributionBuilder,
 }
 
 pub struct InfluxRecorder {
     inner: Arc<Inner>,
-    global_tags: HashMap<String, String>,
-    global_fields: HashMap<String, MetricData>,
     exporter_config: ExporterConfig,
 }
 
 impl InfluxRecorder {
-    pub(crate) fn new(
-        inner: Arc<Inner>,
-        exporter_config: ExporterConfig,
-        global_tags: HashMap<String, String>,
-        global_fields: HashMap<String, MetricData>,
-    ) -> Self {
+    pub(crate) fn new(inner: Arc<Inner>, exporter_config: ExporterConfig) -> Self {
         Self {
             inner,
-            global_tags,
-            global_fields,
             exporter_config,
         }
     }
@@ -70,8 +68,6 @@ impl InfluxRecorder {
     pub fn handle(&self) -> InfluxHandle {
         InfluxHandle {
             inner: self.inner.to_owned(),
-            global_tags: self.global_tags.to_owned(),
-            global_fields: self.global_fields.to_owned(),
         }
     }
 
@@ -143,15 +139,15 @@ impl Recorder for InfluxRecorder {
             .get_or_create_gauge(key, |c| c.to_owned().into())
     }
 
-    fn register_histogram(&self, _key: &Key) -> Histogram {
-        unimplemented!()
+    fn register_histogram(&self, key: &Key) -> Histogram {
+        self.inner
+            .registry
+            .get_or_create_histogram(key, |b| b.to_owned().into())
     }
 }
 
 pub struct InfluxHandle {
     inner: Arc<Inner>,
-    global_tags: HashMap<String, String>,
-    global_fields: HashMap<String, MetricData>,
 }
 
 impl InfluxHandle {
@@ -172,22 +168,96 @@ impl InfluxHandle {
             .get_counter_handles()
             .into_iter()
             .map(|(key, value)| (key, MetricData::from(value.load(Ordering::Acquire))));
-        let metrics = gauges
-            .chain(counters)
+
+        let distributions = self
+            .inner
+            .registry
+            .get_histogram_handles()
+            .into_iter()
             .map(|(key, value)| {
-                let (tags, mut fields) = parse_labels(
-                    self.global_tags.to_owned(),
-                    self.global_fields.to_owned(),
-                    key.labels(),
-                );
-                fields.insert("value".to_string(), value);
-                InfluxMetric {
-                    name: key.name().to_string(),
-                    fields,
-                    tags,
-                }
+                let mut distribution = self.inner.distribution_builder.get_distribution(key.name());
+                value.clear_with(|samples| distribution.record_samples(samples));
+                (key, distribution)
             })
             .collect_vec();
+
+        let histogram_metrics = distributions.into_iter().flat_map(|(key, dist)| {
+            let (tags, fields) = parse_labels(
+                self.inner.global_tags.to_owned(),
+                self.inner.global_fields.to_owned(),
+                key.labels(),
+            );
+            match dist {
+                Distribution::Histogram(histogram) => {
+                    let fields = fields
+                        .into_iter()
+                        .chain([
+                            ("sum".to_string(), histogram.sum().into()),
+                            ("count".to_string(), histogram.count().into()),
+                        ])
+                        .chain(
+                            histogram
+                                .buckets()
+                                .into_iter()
+                                .map(|(le, count)| (format!("{:.2}", le), count.into())),
+                        )
+                        .collect();
+
+                    Some(InfluxMetric {
+                        name: key.name().to_string(),
+                        fields,
+                        tags,
+                    })
+                }
+                Distribution::Summary(summary, quantiles, sum) => {
+                    if !summary.is_empty() {
+                        let snapshot = summary.snapshot(Instant::now());
+                        let fields = fields
+                            .into_iter()
+                            .chain(
+                                [
+                                    ("sum".to_string(), sum.into()),
+                                    ("count".to_string(), summary.count().into()),
+                                ]
+                                .into_iter(),
+                            )
+                            .chain(quantiles.iter().map(|quantile| {
+                                (
+                                    quantile.label().to_string(),
+                                    snapshot
+                                        .quantile(quantile.value())
+                                        .unwrap_or_default()
+                                        .into(),
+                                )
+                            }))
+                            .collect();
+                        Some(InfluxMetric {
+                            name: key.name().to_string(),
+                            fields,
+                            tags,
+                        })
+                    } else {
+                        None
+                    }
+                }
+            }
+        });
+
+        let counter_gauge_metrics = gauges.chain(counters).map(|(key, value)| {
+            let (tags, mut fields) = parse_labels(
+                self.inner.global_tags.to_owned(),
+                self.inner.global_fields.to_owned(),
+                key.labels(),
+            );
+            fields.insert("value".to_string(), value);
+            InfluxMetric {
+                name: key.name().to_string(),
+                fields,
+                tags,
+            }
+        });
+
+        let metrics = counter_gauge_metrics.chain(histogram_metrics).collect_vec();
         let count = metrics.len();
         let metrics = metrics
             .into_iter()
