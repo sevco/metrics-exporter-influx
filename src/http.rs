@@ -6,7 +6,7 @@ use itertools::Itertools;
 use reqwest::{Body, Client, RequestBuilder, Url};
 use tokio_retry::strategy::FibonacciBackoff;
 use tokio_retry::Retry;
-use tracing::{debug, error};
+use tracing::{debug, error, trace};
 
 #[derive(Clone)]
 pub enum APIVersion {
@@ -71,6 +71,7 @@ impl InfluxExporter for InfluxHttpExporter {
         let (count, body) = self.handle.render();
         if count > 0 {
             debug!("writing {count} metrics over http");
+            trace!(payload = body, "writing metrics payload");
             let resp = Retry::spawn(FibonacciBackoff::from_millis(500).take(3), || async {
                 let resp = self
                     .base

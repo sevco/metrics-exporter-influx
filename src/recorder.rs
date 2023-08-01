@@ -48,7 +48,6 @@ pub(crate) struct Inner {
     pub registry: Registry<Key, AtomicStorage>,
     pub global_tags: HashMap<String, String>,
     pub global_fields: HashMap<String, MetricData>,
-    // pub distributions: Arc<RwLock<HashMap<String, IndexMap<Vec<(String, String)>, Distribution>>>>,
     pub distribution_builder: DistributionBuilder,
 }
 

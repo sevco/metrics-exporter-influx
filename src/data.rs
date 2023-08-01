@@ -94,7 +94,7 @@ impl From<DateTime<Utc>> for MetricData {
 impl Display for MetricData {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let s = match self {
-            Self::Float(f) => f.to_string(),
+            Self::Float(f) => format!("{}", f),
             Self::Integer(i) => format!("{i}i"),
             // send unsigned as integer, even though the spec says unsigned are supported
             // Grafana cloud does not write these
