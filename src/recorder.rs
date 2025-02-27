@@ -4,15 +4,17 @@ use crate::exporter::{InfluxExporter, InfluxFileExporter};
 use crate::http::{APIVersion, InfluxHttpExporter};
 use crate::registry::AtomicStorage;
 use crate::BuildError;
+use chrono::Utc;
 use itertools::Itertools;
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Label, Recorder, SharedString, Unit};
 use metrics_util::registry::Registry;
 use quanta::Instant;
 use reqwest::Url;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::Mutex as SyncMutex;
 use std::thread;
 use tokio::runtime;
 use tokio::sync::Mutex;
@@ -50,6 +52,7 @@ pub(crate) struct Inner {
     pub global_fields: HashMap<String, MetricData>,
     // pub distributions: Arc<RwLock<HashMap<String, IndexMap<Vec<(String, String)>, Distribution>>>>,
     pub distribution_builder: DistributionBuilder,
+    pub counter_registrations: SyncMutex<HashSet<Key>>,
 }
 
 pub struct InfluxRecorder {
@@ -128,9 +131,23 @@ impl Recorder for InfluxRecorder {
     }
 
     fn register_counter(&self, key: &Key) -> Counter {
-        self.inner
-            .registry
-            .get_or_create_counter(key, |c| c.to_owned().into())
+        if self.inner.registry.get_counter_handles().contains_key(key) {
+            // it's a little clunky to check for the key then fetch it rather than get and match
+            // on the Option. But returning the Arc<u64> directly seems to make the associated
+            // typing of `Recorder` unhappy
+            self.inner
+                .registry
+                .get_or_create_counter(key, |c| c.to_owned().into())
+        } else {
+            self.inner
+                .counter_registrations
+                .lock()
+                .unwrap()
+                .insert(key.to_owned());
+            self.inner
+                .registry
+                .get_or_create_counter(key, |c| c.to_owned().into())
+        }
     }
 
     fn register_gauge(&self, key: &Key) -> Gauge {
@@ -162,6 +179,9 @@ impl InfluxHandle {
                 let value = f64::from_bits(value.load(Ordering::Acquire));
                 (key, MetricData::from(value))
             });
+
+        let mut _guard = self.inner.counter_registrations.lock().unwrap();
+        let registrations = _guard.drain().map(|k| (k, MetricData::from(0)));
         let counters = self
             .inner
             .registry
@@ -205,6 +225,7 @@ impl InfluxHandle {
 
                     Some(InfluxMetric {
                         name: key.name().to_string(),
+                        timestamp: Utc::now().timestamp_nanos_opt().unwrap(),
                         fields,
                         tags,
                     })
@@ -233,6 +254,7 @@ impl InfluxHandle {
                             .collect();
                         Some(InfluxMetric {
                             name: key.name().to_string(),
+                            timestamp: Utc::now().timestamp_nanos_opt().unwrap(),
                             fields,
                             tags,
                         })
@@ -243,24 +265,41 @@ impl InfluxHandle {
             }
         });
 
-        let counter_gauge_metrics = gauges.chain(counters).map(|(key, value)| {
-            let (tags, mut fields) = parse_labels(
-                self.inner.global_tags.to_owned(),
-                self.inner.global_fields.to_owned(),
-                key.labels(),
-            );
-            fields.insert("value".to_string(), value);
-            InfluxMetric {
-                name: key.name().to_string(),
-                fields,
-                tags,
-            }
-        });
+        let counter_gauge_metrics = gauges
+            .chain(registrations)
+            .chain(counters)
+            .into_group_map_by(|(k, _)| k.to_owned())
+            .into_iter()
+            .flat_map(|(key, values)| {
+                let timestamp = Utc::now().timestamp_nanos_opt().unwrap();
+                values
+                    .into_iter()
+                    // reverse so newest metrics are first
+                    .rev()
+                    .enumerate()
+                    .map(move |(index, (_, value))| {
+                        let (tags, mut fields) = parse_labels(
+                            self.inner.global_tags.to_owned(),
+                            self.inner.global_fields.to_owned(),
+                            key.labels(),
+                        );
+                        fields.insert("value".to_string(), value);
+                        InfluxMetric {
+                            name: key.name().to_string(),
+                            // make sure metrics don't collide by subtracting index nanos from timestamp
+                            timestamp: timestamp - index as i64,
+                            fields,
+                            tags,
+                        }
+                    })
+            });
 
         let metrics = counter_gauge_metrics.chain(histogram_metrics).collect_vec();
+
         let count = metrics.len();
         let metrics = metrics
             .into_iter()
+            .sorted_by_key(|m| m.timestamp)
             .map(|m| m.to_string())
             .sorted()
             .join("\n");
