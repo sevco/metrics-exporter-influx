@@ -111,7 +111,7 @@ impl Display for MetricData {
 
 pub struct InfluxMetric {
     pub name: String,
-    pub timestamp: i64,
+    pub timestamp: DateTime<Utc>,
     pub fields: HashMap<String, MetricData>,
     pub tags: HashMap<String, String>,
 }
@@ -151,7 +151,10 @@ impl Display for InfluxMetric {
             s.push_str(&format!(" {fields}"));
         }
 
-        s.push_str(&format!(" {}", self.timestamp));
+        s.push_str(&format!(
+            " {}",
+            self.timestamp.timestamp_nanos_opt().unwrap()
+        ));
 
         f.write_str(&s)
     }
@@ -166,14 +169,14 @@ fn escape_string(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use crate::data::{InfluxMetric, MetricData};
-    use chrono::{TimeZone, Utc};
+    use chrono::{DateTime, TimeZone, Utc};
 
     #[test]
     fn format() {
         let now = Utc.with_ymd_and_hms(2020, 1, 1, 1, 1, 1).unwrap();
         let metric = InfluxMetric {
             name: "test =metric".to_string(),
-            timestamp: 0,
+            timestamp: DateTime::from_timestamp(0, 0).unwrap(),
             fields: vec![
                 ("float".to_string(), MetricData::Float(1.11)),
                 ("\"int\"".to_string(), MetricData::Integer(-100)),

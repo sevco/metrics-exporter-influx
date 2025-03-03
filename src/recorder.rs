@@ -4,7 +4,7 @@ use crate::exporter::{InfluxExporter, InfluxFileExporter};
 use crate::http::{APIVersion, InfluxHttpExporter};
 use crate::registry::AtomicStorage;
 use crate::BuildError;
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use itertools::Itertools;
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Label, Recorder, SharedString, Unit};
 use metrics_util::registry::Registry;
@@ -225,7 +225,7 @@ impl InfluxHandle {
 
                     Some(InfluxMetric {
                         name: key.name().to_string(),
-                        timestamp: Utc::now().timestamp_nanos_opt().unwrap(),
+                        timestamp: Utc::now(),
                         fields,
                         tags,
                     })
@@ -254,7 +254,7 @@ impl InfluxHandle {
                             .collect();
                         Some(InfluxMetric {
                             name: key.name().to_string(),
-                            timestamp: Utc::now().timestamp_nanos_opt().unwrap(),
+                            timestamp: Utc::now(),
                             fields,
                             tags,
                         })
@@ -271,7 +271,7 @@ impl InfluxHandle {
             .into_group_map_by(|(k, _)| k.to_owned())
             .into_iter()
             .flat_map(|(key, values)| {
-                let timestamp = Utc::now().timestamp_nanos_opt().unwrap();
+                let timestamp = Utc::now();
                 values
                     .into_iter()
                     // reverse so newest metrics are first
@@ -286,8 +286,8 @@ impl InfluxHandle {
                         fields.insert("value".to_string(), value);
                         InfluxMetric {
                             name: key.name().to_string(),
-                            // make sure metrics don't collide by subtracting index nanos from timestamp
-                            timestamp: timestamp - index as i64,
+                            // make sure metrics don't collide by subtracting index ms from timestamp
+                            timestamp: timestamp - Duration::milliseconds(index as i64),
                             fields,
                             tags,
                         }
