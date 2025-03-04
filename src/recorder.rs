@@ -196,11 +196,16 @@ impl InfluxHandle {
 
         let registrations = {
             let mut _guard = self.inner.counter_registrations.lock().unwrap();
-            _guard
-                .drain()
-                .map(|k| (k, MetricData::from(0)))
-                .collect_vec()
+            let registrations = _guard
+                .iter()
+                .map(|k| (k.to_owned(), MetricData::from(0)))
+                .collect_vec();
+            _guard.clear();
+            registrations
         };
+
+        error!("found {} new metric registrations", registrations.len());
+
         let counters = self
             .inner
             .registry
