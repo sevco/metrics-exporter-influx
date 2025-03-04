@@ -19,11 +19,12 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-use std::sync::Arc;
-
+use crate::distribution::Distribution;
+use itertools::Itertools;
 use metrics::{atomics::AtomicU64, HistogramFn};
 use metrics_util::AtomicBucket;
 use quanta::Instant;
+use std::sync::Arc;
 
 /// Atomic metric storage for the prometheus exporter.
 pub struct AtomicStorage;
@@ -63,6 +64,15 @@ impl<T> AtomicBucketInstant<T> {
         F: FnMut(&[(T, Instant)]),
     {
         self.inner.clear_with(f);
+    }
+}
+
+impl AtomicBucketInstant<f64> {
+    pub fn record_samples(&self, mut distribution: Distribution) -> Distribution {
+        self.inner.data_with(|samples| {
+            distribution.record_samples(samples);
+        });
+        distribution
     }
 }
 

@@ -116,8 +116,6 @@ impl InfluxExporter for InfluxHttpExporter {
                     );
                 }
             }
-
-            self.handle.clear();
         } else {
             debug!("no metrics to write");
         }

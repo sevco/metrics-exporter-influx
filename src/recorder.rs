@@ -5,6 +5,7 @@ use crate::http::{APIVersion, InfluxHttpExporter};
 use crate::registry::AtomicStorage;
 use crate::BuildError;
 use chrono::{Duration, Utc};
+use indexmap::IndexMap;
 use itertools::Itertools;
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Label, Recorder, SharedString, Unit};
 use metrics_util::registry::Registry;
@@ -13,8 +14,8 @@ use reqwest::Url;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::sync::Mutex as SyncMutex;
+use std::sync::{Arc, RwLock};
 use std::thread;
 use tokio::runtime;
 use tokio::sync::Mutex;
@@ -50,7 +51,7 @@ pub(crate) struct Inner {
     pub registry: Registry<Key, AtomicStorage>,
     pub global_tags: HashMap<String, String>,
     pub global_fields: HashMap<String, MetricData>,
-    // pub distributions: Arc<RwLock<HashMap<String, IndexMap<Vec<(String, String)>, Distribution>>>>,
+    // pub distributions: RwLock<HashMap<String, IndexMap<Vec<(String, String)>, Distribution>>>,
     pub distribution_builder: DistributionBuilder,
     pub counter_registrations: SyncMutex<HashSet<Key>>,
 }
@@ -139,6 +140,7 @@ impl Recorder for InfluxRecorder {
                 .registry
                 .get_or_create_counter(key, |c| c.to_owned().into())
         } else {
+            error!("registering {:?}", key);
             self.inner
                 .counter_registrations
                 .lock()
@@ -196,7 +198,8 @@ impl InfluxHandle {
             .into_iter()
             .map(|(key, value)| {
                 let mut distribution = self.inner.distribution_builder.get_distribution(key.name());
-                value.clear_with(|samples| distribution.record_samples(samples));
+                let distribution = value
+                    .record_samples(self.inner.distribution_builder.get_distribution(key.name()));
                 (key, distribution)
             })
             .collect_vec();
