@@ -224,6 +224,7 @@ impl InfluxBuilder {
                     self.bucket_overrides,
                 ),
                 counter_registrations: Default::default(),
+                registered_counters: Default::default(),
             }),
             self.exporter_config,
         )

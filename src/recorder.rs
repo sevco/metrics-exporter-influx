@@ -54,6 +54,7 @@ pub(crate) struct Inner {
     // pub distributions: RwLock<HashMap<String, IndexMap<Vec<(String, String)>, Distribution>>>,
     pub distribution_builder: DistributionBuilder,
     pub counter_registrations: SyncMutex<HashSet<Key>>,
+    pub registered_counters: SyncMutex<HashSet<Key>>,
 }
 
 pub struct InfluxRecorder {
@@ -132,6 +133,7 @@ impl Recorder for InfluxRecorder {
     }
 
     fn register_counter(&self, key: &Key) -> Counter {
+        let mut counter_registrations = self.inner.counter_registrations.lock().unwrap();
         if self.inner.registry.get_counter_handles().contains_key(key) {
             // it's a little clunky to check for the key then fetch it rather than get and match
             // on the Option. But returning the Arc<u64> directly seems to make the associated
@@ -141,8 +143,18 @@ impl Recorder for InfluxRecorder {
                 .get_or_create_counter(key, |c| c.to_owned().into())
         } else {
             error!("registering {:?}", key);
+            if self.inner.registered_counters.lock().unwrap().contains(key) {
+                error!("re-registering {:?}", key)
+            } else {
+                self.inner
+                    .registered_counters
+                    .lock()
+                    .unwrap()
+                    .insert(key.clone());
+            }
+            counter_registrations.insert(key.to_owned());
             self.inner
-                .counter_registrations
+                .registered_counters
                 .lock()
                 .unwrap()
                 .insert(key.to_owned());
@@ -182,8 +194,13 @@ impl InfluxHandle {
                 (key, MetricData::from(value))
             });
 
-        let mut _guard = self.inner.counter_registrations.lock().unwrap();
-        let registrations = _guard.drain().map(|k| (k, MetricData::from(0)));
+        let registrations = {
+            let mut _guard = self.inner.counter_registrations.lock().unwrap();
+            _guard
+                .drain()
+                .map(|k| (k, MetricData::from(0)))
+                .collect_vec()
+        };
         let counters = self
             .inner
             .registry
