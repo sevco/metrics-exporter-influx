@@ -54,7 +54,6 @@ pub(crate) struct Inner {
     // pub distributions: RwLock<HashMap<String, IndexMap<Vec<(String, String)>, Distribution>>>,
     pub distribution_builder: DistributionBuilder,
     pub counter_registrations: SyncMutex<HashSet<Key>>,
-    pub registered_counters: SyncMutex<HashSet<Key>>,
 }
 
 pub struct InfluxRecorder {
@@ -142,22 +141,7 @@ impl Recorder for InfluxRecorder {
                 .registry
                 .get_or_create_counter(key, |c| c.to_owned().into())
         } else {
-            error!("registering {:?}", key);
-            if self.inner.registered_counters.lock().unwrap().contains(key) {
-                error!("re-registering {:?}", key)
-            } else {
-                self.inner
-                    .registered_counters
-                    .lock()
-                    .unwrap()
-                    .insert(key.clone());
-            }
             counter_registrations.insert(key.to_owned());
-            self.inner
-                .registered_counters
-                .lock()
-                .unwrap()
-                .insert(key.to_owned());
             self.inner
                 .registry
                 .get_or_create_counter(key, |c| c.to_owned().into())
