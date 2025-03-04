@@ -18,7 +18,7 @@ use std::sync::Mutex as SyncMutex;
 use std::thread;
 use tokio::runtime;
 use tokio::sync::Mutex;
-use tracing::error;
+use tracing::{error, info};
 
 #[derive(Clone)]
 pub(crate) enum ExporterConfig {
@@ -303,6 +303,7 @@ impl InfluxHandle {
             .map(|m| m.to_string())
             .sorted()
             .join("\n");
+        error!("submitting batch {}", metrics);
         (count, metrics)
     }
 
