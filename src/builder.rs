@@ -153,7 +153,6 @@ impl InfluxBuilder {
         username: Option<String>,
         password: Option<String>,
         org: Option<String>,
-        precision: Option<String>,
     ) -> Result<Self, BuildError>
     where
         Url: TryFrom<E>,
@@ -162,7 +161,7 @@ impl InfluxBuilder {
         self.exporter_config = ExporterConfig::Http(Arc::new(HttpConfig {
             api_version: APIVersion::Influx {
                 bucket,
-                precision,
+                precision: Some("ns".to_string()),
                 org,
             },
             gzip: true,
@@ -224,6 +223,7 @@ impl InfluxBuilder {
                     self.buckets,
                     self.bucket_overrides,
                 ),
+                counter_registrations: Default::default(),
             }),
             self.exporter_config,
         )

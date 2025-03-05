@@ -4,15 +4,17 @@ use crate::exporter::{InfluxExporter, InfluxFileExporter};
 use crate::http::{APIVersion, InfluxHttpExporter};
 use crate::registry::AtomicStorage;
 use crate::BuildError;
+use chrono::{Duration, Utc};
 use itertools::Itertools;
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Label, Recorder, SharedString, Unit};
 use metrics_util::registry::Registry;
 use quanta::Instant;
 use reqwest::Url;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::Mutex as SyncMutex;
 use std::thread;
 use tokio::runtime;
 use tokio::sync::Mutex;
@@ -48,8 +50,8 @@ pub(crate) struct Inner {
     pub registry: Registry<Key, AtomicStorage>,
     pub global_tags: HashMap<String, String>,
     pub global_fields: HashMap<String, MetricData>,
-    // pub distributions: Arc<RwLock<HashMap<String, IndexMap<Vec<(String, String)>, Distribution>>>>,
     pub distribution_builder: DistributionBuilder,
+    pub counter_registrations: SyncMutex<HashSet<Key>>,
 }
 
 pub struct InfluxRecorder {
@@ -128,9 +130,20 @@ impl Recorder for InfluxRecorder {
     }
 
     fn register_counter(&self, key: &Key) -> Counter {
-        self.inner
-            .registry
-            .get_or_create_counter(key, |c| c.to_owned().into())
+        let mut counter_registrations = self.inner.counter_registrations.lock().unwrap();
+        if self.inner.registry.get_counter_handles().contains_key(key) {
+            // it's a little clunky to check for the key then fetch it rather than get and match
+            // on the Option. But returning the Arc<u64> directly seems to make the associated
+            // typing of `Recorder` unhappy
+            self.inner
+                .registry
+                .get_or_create_counter(key, |c| c.to_owned().into())
+        } else {
+            counter_registrations.insert(key.to_owned());
+            self.inner
+                .registry
+                .get_or_create_counter(key, |c| c.to_owned().into())
+        }
     }
 
     fn register_gauge(&self, key: &Key) -> Gauge {
@@ -162,6 +175,19 @@ impl InfluxHandle {
                 let value = f64::from_bits(value.load(Ordering::Acquire));
                 (key, MetricData::from(value))
             });
+
+        let registrations = {
+            let mut _guard = self.inner.counter_registrations.lock().unwrap();
+            let registrations = _guard
+                .iter()
+                .map(|k| (k.to_owned(), MetricData::from(0)))
+                .collect_vec();
+            _guard.clear();
+            registrations
+        };
+
+        error!("found {} new metric registrations", registrations.len());
+
         let counters = self
             .inner
             .registry
@@ -175,8 +201,8 @@ impl InfluxHandle {
             .get_histogram_handles()
             .into_iter()
             .map(|(key, value)| {
-                let mut distribution = self.inner.distribution_builder.get_distribution(key.name());
-                value.clear_with(|samples| distribution.record_samples(samples));
+                let distribution = value
+                    .record_samples(self.inner.distribution_builder.get_distribution(key.name()));
                 (key, distribution)
             })
             .collect_vec();
@@ -205,6 +231,7 @@ impl InfluxHandle {
 
                     Some(InfluxMetric {
                         name: key.name().to_string(),
+                        timestamp: Utc::now(),
                         fields,
                         tags,
                     })
@@ -214,13 +241,10 @@ impl InfluxHandle {
                         let snapshot = summary.snapshot(Instant::now());
                         let fields = fields
                             .into_iter()
-                            .chain(
-                                [
-                                    ("sum".to_string(), sum.into()),
-                                    ("count".to_string(), summary.count().into()),
-                                ]
-                                .into_iter(),
-                            )
+                            .chain([
+                                ("sum".to_string(), sum.into()),
+                                ("count".to_string(), summary.count().into()),
+                            ])
                             .chain(quantiles.iter().map(|quantile| {
                                 (
                                     quantile.label().to_string(),
@@ -233,6 +257,7 @@ impl InfluxHandle {
                             .collect();
                         Some(InfluxMetric {
                             name: key.name().to_string(),
+                            timestamp: Utc::now(),
                             fields,
                             tags,
                         })
@@ -243,27 +268,48 @@ impl InfluxHandle {
             }
         });
 
-        let counter_gauge_metrics = gauges.chain(counters).map(|(key, value)| {
-            let (tags, mut fields) = parse_labels(
-                self.inner.global_tags.to_owned(),
-                self.inner.global_fields.to_owned(),
-                key.labels(),
-            );
-            fields.insert("value".to_string(), value);
-            InfluxMetric {
-                name: key.name().to_string(),
-                fields,
-                tags,
-            }
-        });
+        let counter_gauge_metrics = gauges
+            .chain(registrations)
+            .chain(counters)
+            // group all metrics by their key
+            .into_group_map_by(|(k, _)| k.to_owned())
+            .into_iter()
+            // make sure we don't have duplicate points sent by subtracting 1 ms from each duplicate
+            // this should only happen in the case of counter initializations
+            .flat_map(|(key, values)| {
+                let timestamp = Utc::now();
+                values
+                    .into_iter()
+                    // reverse so newest metrics are first
+                    .rev()
+                    .enumerate()
+                    .map(move |(index, (_, value))| {
+                        let (tags, mut fields) = parse_labels(
+                            self.inner.global_tags.to_owned(),
+                            self.inner.global_fields.to_owned(),
+                            key.labels(),
+                        );
+                        fields.insert("value".to_string(), value);
+                        InfluxMetric {
+                            name: key.name().to_string(),
+                            // make sure metrics don't collide by subtracting index ms from timestamp
+                            timestamp: timestamp - Duration::milliseconds(index as i64),
+                            fields,
+                            tags,
+                        }
+                    })
+            });
 
         let metrics = counter_gauge_metrics.chain(histogram_metrics).collect_vec();
+
         let count = metrics.len();
         let metrics = metrics
             .into_iter()
+            .sorted_by_key(|m| m.timestamp)
             .map(|m| m.to_string())
             .sorted()
             .join("\n");
+        error!("submitting batch {}", metrics);
         (count, metrics)
     }
 

@@ -103,7 +103,7 @@ impl Display for MetricData {
                 format!("\"{}\"", s.replace('"', r#"\""#))
             }
             Self::Boolean(b) => b.to_string(),
-            Self::Timestamp(t) => t.timestamp_nanos().to_string(),
+            Self::Timestamp(t) => t.timestamp_nanos_opt().unwrap().to_string(),
         };
         f.write_str(&s)
     }
@@ -111,6 +111,7 @@ impl Display for MetricData {
 
 pub struct InfluxMetric {
     pub name: String,
+    pub timestamp: DateTime<Utc>,
     pub fields: HashMap<String, MetricData>,
     pub tags: HashMap<String, String>,
 }
@@ -140,12 +141,22 @@ impl Display for InfluxMetric {
             )
         };
 
-        f.write_str(&format!(
-            "{}{} {}",
-            escape_string(&self.name),
-            tags.map(|t| format!(",{t}")).unwrap_or(String::from("")),
-            fields.unwrap_or(String::from(""))
-        ))
+        let mut s = escape_string(&self.name);
+
+        if let Some(tags) = tags {
+            s.push_str(&format!(",{tags}"));
+        }
+
+        if let Some(fields) = fields {
+            s.push_str(&format!(" {fields}"));
+        }
+
+        s.push_str(&format!(
+            " {}",
+            self.timestamp.timestamp_nanos_opt().unwrap()
+        ));
+
+        f.write_str(&s)
     }
 }
 
@@ -158,13 +169,14 @@ fn escape_string(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use crate::data::{InfluxMetric, MetricData};
-    use chrono::{TimeZone, Utc};
+    use chrono::{DateTime, TimeZone, Utc};
 
     #[test]
     fn format() {
         let now = Utc.with_ymd_and_hms(2020, 1, 1, 1, 1, 1).unwrap();
         let metric = InfluxMetric {
             name: "test =metric".to_string(),
+            timestamp: DateTime::from_timestamp(0, 0).unwrap(),
             fields: vec![
                 ("float".to_string(), MetricData::Float(1.11)),
                 ("\"int\"".to_string(), MetricData::Integer(-100)),
@@ -188,7 +200,7 @@ mod tests {
 
         assert_eq!(
             metric.to_string(),
-            r#"test\ \=metric,key=value,tag\ Key1=tag\ Value1 "int"=-100i,bool=false,float=1.11,string="\"metric\", 🚀",t=1577840461000000000,uint=100i"#
+            r#"test\ \=metric,key=value,tag\ Key1=tag\ Value1 "int"=-100i,bool=false,float=1.11,string="\"metric\", 🚀",t=1577840461000000000,uint=100i 0"#
         );
     }
 }

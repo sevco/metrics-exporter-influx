@@ -15,14 +15,30 @@ async fn write_influx() -> anyhow::Result<()> {
             .method(Method::POST)
             .query_param("bucket", "db/rp")
             .query_param("org", "org_id")
-            .query_param("precision", "s")
-            .body(
-                vec![
-                    "counter,tag0=value0,tag1=value1,tag2=value2,tag3=value3 field0=false,field1=\"0\",value=2i",
-                    "gauge,tag0=value0 field0=false,value=-1000",
-                    "histogram,tag0=value0 count=100i,field0=false,max=99,min=0,p50=49.00390593892515,p90=89.00566416071958,p95=94.00049142147152,p99=97.99338832106014,p999=97.99338832106014,sum=4950"
-                ].join("\n")
-            );
+            .query_param("precision", "ns")
+            .matches(|request| match &request.body {
+                Some(body) => {
+                    let expected = vec![
+                        "counter,tag0=value0,tag1=value1,tag2=value2,tag3=value3 field0=false,field1=\"0\",value=0i",
+                        "counter,tag0=value0,tag1=value1,tag2=value2,tag3=value3 field0=false,field1=\"0\",value=2i",
+                        "gauge,tag0=value0 field0=false,value=-1000",
+                        "histogram,tag0=value0 count=100i,field0=false,max=99,min=0,p50=49.00390593892515,p90=89.00566416071958,p95=94.00049142147152,p99=97.99338832106014,p999=97.99338832106014,sum=4950"
+                    ];
+                    let content = String::from_utf8_lossy(body);
+                    for (index, line) in content.lines().enumerate() {
+                        match expected.get(index) {
+                            Some(e) => {
+                                if !line.starts_with(e) {
+                                    return false
+                                }
+                            }
+                            _ => return false
+                        }
+                    }
+                    true
+                }
+                _ => false,
+            });
         then.status(200);
     });
 
@@ -33,7 +49,6 @@ async fn write_influx() -> anyhow::Result<()> {
             Some("user".to_string()),
             Some("password".to_string()),
             Some("org_id".to_string()),
-            Some("s".to_string()),
         )?
         .with_gzip(false)
         .add_global_tag("tag0", "value0")
