@@ -5,7 +5,6 @@ use crate::http::{APIVersion, InfluxHttpExporter};
 use crate::registry::AtomicStorage;
 use crate::BuildError;
 use chrono::{Duration, Utc};
-use indexmap::IndexMap;
 use itertools::Itertools;
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Label, Recorder, SharedString, Unit};
 use metrics_util::registry::Registry;
@@ -14,12 +13,12 @@ use reqwest::Url;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::sync::Mutex as SyncMutex;
-use std::sync::{Arc, RwLock};
 use std::thread;
 use tokio::runtime;
 use tokio::sync::Mutex;
-use tracing::{error, info};
+use tracing::error;
 
 #[derive(Clone)]
 pub(crate) enum ExporterConfig {
@@ -51,7 +50,6 @@ pub(crate) struct Inner {
     pub registry: Registry<Key, AtomicStorage>,
     pub global_tags: HashMap<String, String>,
     pub global_fields: HashMap<String, MetricData>,
-    // pub distributions: RwLock<HashMap<String, IndexMap<Vec<(String, String)>, Distribution>>>,
     pub distribution_builder: DistributionBuilder,
     pub counter_registrations: SyncMutex<HashSet<Key>>,
 }
@@ -203,7 +201,6 @@ impl InfluxHandle {
             .get_histogram_handles()
             .into_iter()
             .map(|(key, value)| {
-                let mut distribution = self.inner.distribution_builder.get_distribution(key.name());
                 let distribution = value
                     .record_samples(self.inner.distribution_builder.get_distribution(key.name()));
                 (key, distribution)
@@ -244,13 +241,10 @@ impl InfluxHandle {
                         let snapshot = summary.snapshot(Instant::now());
                         let fields = fields
                             .into_iter()
-                            .chain(
-                                [
-                                    ("sum".to_string(), sum.into()),
-                                    ("count".to_string(), summary.count().into()),
-                                ]
-                                .into_iter(),
-                            )
+                            .chain([
+                                ("sum".to_string(), sum.into()),
+                                ("count".to_string(), summary.count().into()),
+                            ])
                             .chain(quantiles.iter().map(|quantile| {
                                 (
                                     quantile.label().to_string(),
@@ -277,8 +271,11 @@ impl InfluxHandle {
         let counter_gauge_metrics = gauges
             .chain(registrations)
             .chain(counters)
+            // group all metrics by their key
             .into_group_map_by(|(k, _)| k.to_owned())
             .into_iter()
+            // make sure we don't have duplicate points sent by subtracting 1 ms from each duplicate
+            // this should only happen in the case of counter initializations
             .flat_map(|(key, values)| {
                 let timestamp = Utc::now();
                 values

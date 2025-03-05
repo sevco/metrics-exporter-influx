@@ -20,7 +20,6 @@
 // SOFTWARE.
 
 use crate::distribution::Distribution;
-use itertools::Itertools;
 use metrics::{atomics::AtomicU64, HistogramFn};
 use metrics_util::AtomicBucket;
 use quanta::Instant;
@@ -57,13 +56,6 @@ impl<T> AtomicBucketInstant<T> {
         Self {
             inner: AtomicBucket::new(),
         }
-    }
-
-    pub fn clear_with<F>(&self, f: F)
-    where
-        F: FnMut(&[(T, Instant)]),
-    {
-        self.inner.clear_with(f);
     }
 }
 
