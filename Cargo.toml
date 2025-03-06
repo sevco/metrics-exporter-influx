@@ -1,6 +1,6 @@
 [package]
 name = "metrics-exporter-influx"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "A metrics-compatible exporter for sending metrics to Influx/Grafana Cloud"
 homepage = "https://github.com/sevco/metrics-exporter-influx"
