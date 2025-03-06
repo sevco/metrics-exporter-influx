@@ -19,6 +19,7 @@ use std::thread;
 use tokio::runtime;
 use tokio::sync::Mutex;
 use tracing::error;
+use tracing::log::debug;
 
 #[derive(Clone)]
 pub(crate) enum ExporterConfig {
@@ -186,7 +187,7 @@ impl InfluxHandle {
             registrations
         };
 
-        error!("found {} new metric registrations", registrations.len());
+        debug!("found {} new metric registrations", registrations.len());
 
         let counters = self
             .inner
