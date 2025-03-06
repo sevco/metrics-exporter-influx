@@ -309,7 +309,6 @@ impl InfluxHandle {
             .map(|m| m.to_string())
             .sorted()
             .join("\n");
-        error!("submitting batch {}", metrics);
         (count, metrics)
     }
 
